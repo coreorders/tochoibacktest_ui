@@ -3,43 +3,36 @@ import pybithumb
 import pandas as pd
 import datetime
 
-# --- 1. 백테스팅 함수 정의 (Streamlit에 맞게 결과 반환으로 수정) ---
+# --- 1. 백테스팅 함수 정의 ---
 def run_backtest(ticker, interval_key, ma_period, initial_capital, fee_rate):
-    results = {} # 결과를 저장할 딕셔너리
-    log_messages = [] # 로그 메시지를 저장할 리스트
+    results = {}
+    log_messages = []
 
     def log(message):
         log_messages.append(message)
-        # print(message) # Streamlit에서는 직접 print하지 않고 log_messages에 추가
 
     log(f"--- 백테스팅 파라미터 확인 ---")
     log(f"코인: {ticker}, 캔들 주기: {interval_key}, MA 기간: {ma_period}")
     log(f"초기 자본: {initial_capital}원, 수수료율: {fee_rate*100}%")
     log(f"\n[{datetime.datetime.now()}] {ticker} {interval_key}봉 이동평균선 백테스팅 시작...")
 
-    # 과거 캔들 데이터 가져오기
-    # st.spinner를 사용하여 데이터 로드 중임을 사용자에게 알림
     with st.spinner(f"'{ticker}' 코인의 '{interval_key}' 데이터를 로드 중입니다..."):
         df = pybithumb.get_ohlcv(ticker, interval=interval_key)
 
     if df is None or df.empty:
         log(f"[{datetime.datetime.now()}] {ticker} {interval_key} 데이터를 가져오지 못했습니다. 백테스팅을 중단합니다.")
         log("입력한 코인 티커나 캔들 주기가 올바른지 확인하거나, 네트워크 연결을 확인하세요.")
-        return results, log_messages # 결과 없음 반환
+        return results, log_messages, []
 
     log(f"총 {len(df)}개의 {interval_key}봉 데이터 로드 완료. ({df.index[0]} ~ {df.index[-1]})")
 
-    # 이동평균선 계산
     df['ma'] = df['close'].rolling(window=ma_period).mean()
-
-    # NaN 값 (초기 이동평균선 계산 불가 구간) 제거
     df = df.dropna()
 
     if df.empty:
         log("이동평균선 계산 후 유효한 데이터가 없습니다. MA 기간을 줄이거나 데이터 양을 확인하세요.")
-        return results, log_messages
+        return results, log_messages, []
 
-    # 백테스팅 변수 초기화
     current_krw = initial_capital
     current_coin_amount = 0
     trades = []
@@ -47,7 +40,7 @@ def run_backtest(ticker, interval_key, ma_period, initial_capital, fee_rate):
 
     log("\n--- 백테스팅 시뮬레이션 시작 ---")
 
-    for i in range(1, len(df)): 
+    for i in range(1, len(df)):
         current_candle = df.iloc[i]
         prev_candle = df.iloc[i-1]
 
@@ -60,13 +53,13 @@ def run_backtest(ticker, interval_key, ma_period, initial_capital, fee_rate):
         # 매수 조건: 골든 크로스 발생 및 코인 미보유 상태
         if not in_position and prev_close_price <= prev_ma_price and close_price > ma_price:
             buy_amount_krw = current_krw * (1 - fee_rate)
-            if buy_amount_krw < 5000: 
-                continue 
+            if buy_amount_krw < 5000:
+                continue
 
             buy_coin_amount = buy_amount_krw / close_price
 
             current_coin_amount += buy_coin_amount
-            current_krw -= (buy_coin_amount * close_price) 
+            current_krw -= (buy_coin_amount * close_price)
 
             in_position = True
             trades.append({
@@ -85,7 +78,7 @@ def run_backtest(ticker, interval_key, ma_period, initial_capital, fee_rate):
             earned_krw = (sell_coin_amount * close_price) * (1 - fee_rate)
 
             current_krw += earned_krw
-            current_coin_amount = 0 
+            current_coin_amount = 0
 
             in_position = False
             trades.append({
@@ -129,13 +122,10 @@ def run_backtest(ticker, interval_key, ma_period, initial_capital, fee_rate):
         win_count = 0
         loss_count = 0
         
-        # 각 매도에 대해 직전 매수를 찾아서 비교 (간단한 로직, 정확도를 높이려면 더 복잡해짐)
         for i in range(len(sell_trades)):
             sell_price = sell_trades[i]['price']
-            # 해당 매도 이전에 발생한 모든 매수 거래 찾기
             previous_buys = [t for t in trades if t['type'] == 'BUY' and t['timestamp'] < sell_trades[i]['timestamp']]
             if previous_buys:
-                # 가장 최근의 매수 가격과 비교
                 last_buy_price = previous_buys[-1]['price']
                 if sell_price > last_buy_price:
                     win_count += 1
@@ -150,7 +140,7 @@ def run_backtest(ticker, interval_key, ma_period, initial_capital, fee_rate):
     else:
         results["승률 (대략)"] = "N/A (거래 없음)"
 
-    return results, log_messages, trades # trades 기록도 함께 반환하여 UI에 표시 가능
+    return results, log_messages, trades
 
 # --- Streamlit UI 구성 ---
 st.set_page_config(layout="centered", page_title="빗썸 자동매매 백테스팅 시뮬레이터")
@@ -158,12 +148,43 @@ st.set_page_config(layout="centered", page_title="빗썸 자동매매 백테스�
 st.title("🚀 빗썸 자동매매 백테스팅 시뮬레이터 🚀")
 st.markdown("이동평균선 크로스오버 전략을 과거 데이터에 적용하여 시뮬레이션합니다.")
 
-# 사이드바 (파라미터 입력)
+# 빗썸에 등록된 모든 코인 티커를 가져오기
+@st.cache_data(ttl=3600) # 1시간마다 업데이트 (API 호출 횟수 제한 방지)
+def get_all_bithumb_coin_tickers():
+    """
+    빗썸에 현재 상장된 모든 코인 티커 목록을 가져옵니다.
+    """
+    try:
+        tickers = pybithumb.get_tickers()
+        return tickers
+    except Exception as e:
+        st.error(f"빗썸 코인 티커를 가져오는 데 실패했습니다: {e}")
+        # 오류 발생 시 제공할 기본 코인 목록 (fallback)
+        return ["BTC", "ETH", "XRP", "ADA", "DOGE", "SHIB"] 
+
+all_bithumb_tickers = get_all_bithumb_coin_tickers()
+
 with st.sidebar:
     st.header("백테스팅 파라미터")
 
-    # 코인 티커 입력
-    ticker_input = st.text_input("거래할 코인 티커 (예: SHIB, BTC, XRP)", value="SHIB").upper()
+    # 코인 티커 드롭다운 (빗썸 전체 코인 목록으로 변경)
+    if all_bithumb_tickers:
+        # 기본 선택값을 'BTC'로 하되, 없으면 목록의 첫 번째로 설정
+        default_ticker_index = 0
+        if "BTC" in all_bithumb_tickers:
+            default_ticker_index = all_bithumb_tickers.index("BTC")
+        elif all_bithumb_tickers: # BTC가 없으면 첫 번째 티커 선택
+            default_ticker_index = 0
+        
+        ticker_input = st.selectbox(
+            "거래할 코인 티커 선택:", 
+            all_bithumb_tickers, 
+            index=default_ticker_index
+        )
+    else:
+        st.warning("빗썸 티커를 가져오지 못했습니다. 수동으로 티커를 입력해주세요.")
+        ticker_input = st.text_input("거래할 코인 티커 (예: SHIB, BTC, XRP)", value="BTC").upper()
+
 
     # 캔들봉 주기 드롭다운 (지원하는 주기 리스트)
     supported_intervals_map = {
@@ -174,7 +195,7 @@ with st.sidebar:
     selected_interval_name = st.selectbox(
         "캔들봉 주기 선택:",
         list(supported_intervals_map.keys()),
-        index=3 # 기본값: 10분봉
+        index=list(supported_intervals_map.keys()).index("1시간봉") # 기본값: 1시간봉으로 변경 (더 많은 데이터 확보)
     )
     interval_key_input = supported_intervals_map[selected_interval_name]
 
@@ -190,6 +211,12 @@ with st.sidebar:
 
     # 백테스팅 실행 버튼
     run_button = st.button("백테스팅 실행")
+
+    # 하단에 만든이 정보 추가
+    st.markdown("---") # 구분선
+    st.markdown("<p style='text-align: right; color: gray;'>만든이 : 민대식</p>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: right; color: gray;'>(with 제미나이)</p>", unsafe_allow_html=True)
+
 
 # 메인 화면 (결과 표시)
 if run_button:
@@ -208,12 +235,11 @@ if run_button:
         # 결과 요약 표시
         st.write("### 요약")
         result_df = pd.DataFrame(results.items(), columns=["항목", "값"])
-        st.table(result_df) # st.dataframe 대신 st.table을 사용하면 고정된 테이블 형태로 보임
+        st.table(result_df)
         
         st.write("---")
         # 로그 메시지 표시
         st.write("### 실행 로그")
-        # st.text_area를 사용하여 로그를 스크롤 가능한 형태로 표시
         st.text_area("로그", "\n".join(log_messages), height=300)
 
         # 거래 기록 표시
@@ -226,6 +252,3 @@ if run_button:
     else:
         st.error("백테스팅 실행 중 오류가 발생했거나 데이터를 가져오지 못했습니다. 로그를 확인하세요.")
         st.text_area("로그", "\n".join(log_messages), height=200)
-
-st.sidebar.markdown("---")
-st.sidebar.markdown("Made with ❤️ by Your AI Assistant")
